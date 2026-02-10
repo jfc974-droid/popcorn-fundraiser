@@ -12,6 +12,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from datetime import datetime
 import streamlit as st
+import os
 
 def get_credentials():
     """Get Google API credentials from service account"""
@@ -23,7 +24,6 @@ def get_credentials():
     
     # Try to use Streamlit secrets first (for cloud)
     try:
-        import streamlit as st
         credentials_dict = {
             "type": st.secrets["gcp_service_account"]["type"],
             "project_id": st.secrets["gcp_service_account"]["project_id"],
@@ -44,46 +44,6 @@ def get_credentials():
         return creds
     except Exception as e:
         # Fall back to local file (for local development)
-        import os
-        if os.path.exists('service_account.json'):
-            creds = service_account.Credentials.from_service_account_file(
-                'service_account.json',
-                scopes=SCOPES
-            )
-            return creds
-        else:
-            raise Exception(f"No credentials found. Error: {str(e)}")def get_credentials():
-    """Get Google API credentials from service account"""
-    SCOPES = [
-        'https://www.googleapis.com/auth/spreadsheets',
-        'https://www.googleapis.com/auth/documents',
-        'https://www.googleapis.com/auth/drive'
-    ]
-    
-    # Try to use Streamlit secrets first (for cloud)
-    try:
-        import streamlit as st
-        credentials_dict = {
-            "type": st.secrets["gcp_service_account"]["type"],
-            "project_id": st.secrets["gcp_service_account"]["project_id"],
-            "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
-            "private_key": st.secrets["gcp_service_account"]["private_key"],
-            "client_email": st.secrets["gcp_service_account"]["client_email"],
-            "client_id": st.secrets["gcp_service_account"]["client_id"],
-            "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
-            "token_uri": st.secrets["gcp_service_account"]["token_uri"],
-            "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
-            "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"],
-            "universe_domain": st.secrets["gcp_service_account"]["universe_domain"]
-        }
-        creds = service_account.Credentials.from_service_account_info(
-            credentials_dict,
-            scopes=SCOPES
-        )
-        return creds
-    except Exception as e:
-        # Fall back to local file (for local development)
-        import os
         if os.path.exists('service_account.json'):
             creds = service_account.Credentials.from_service_account_file(
                 'service_account.json',
@@ -271,7 +231,6 @@ def create_production_report():
         
         data = master_sheet.get_all_values()
         rows = data[1:]
-        headers = data[0]
         
         output.append(f"Found {len(rows)} rows")
         
@@ -428,5 +387,4 @@ def create_production_report():
         return "\n".join(output), None, pdf_filename
         
     except Exception as e:
-
         return "\n".join(output), str(e), None
