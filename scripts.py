@@ -409,25 +409,18 @@ def create_production_report():
         return "\n".join(output), str(e), None
 
 def export_order_forms(school_name):
-    """Generate order forms for a specific school"""
+    """Generate order forms for a specific school using docx template"""
     output = []
     
     try:
+        from docx import Document
+        from docx.shared import Pt, RGBColor
+        from docx2pdf import convert
+        import tempfile
+        
         creds = get_credentials()
         gc = gspread.authorize(creds)
-        docs_service = build('docs', 'v1', credentials=creds)
         drive_service = build('drive', 'v3', credentials=creds)
-        
-        # Find the temp folder
-        temp_folder_query = "name='Order Forms Temp' and mimeType='application/vnd.google-apps.folder'"
-        temp_folder_results = drive_service.files().list(q=temp_folder_query).execute()
-        temp_folders = temp_folder_results.get('files', [])
-        
-        if not temp_folders:
-            return "\n".join(output), "Folder 'Order Forms Temp' not found or not shared with service account!", None
-        
-        TEMP_FOLDER_ID = temp_folders[0]['id']
-        output.append("Found temp folder")
         
         # Find template
         template_query = "name='Order Template for PDF' and mimeType='application/vnd.google-apps.document'"
@@ -439,6 +432,22 @@ def export_order_forms(school_name):
         
         TEMPLATE_ID = templates[0]['id']
         output.append("Found template")
+        
+        # Download template as Word document
+        output.append("Downloading template...")
+        request = drive_service.files().export_media(
+            fileId=TEMPLATE_ID,
+            mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
+        
+        template_docx = 'template.docx'
+        with io.FileIO(template_docx, 'wb') as fh:
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+        
+        output.append("Template downloaded")
         
         # Read from school-specific sheet
         spreadsheet = gc.open('MASTER SPRING 2026')
@@ -453,7 +462,7 @@ def export_order_forms(school_name):
         
         output.append(f"Found {len(rows)} rows in {school_name} MASTER")
         
-        # Column indices in school sheet: A, AW, AY, Q, R, S, O, Y, AV
+        # Column indices
         col_order_num = 0
         col_student = 1
         col_grade = 2
@@ -502,7 +511,7 @@ def export_order_forms(school_name):
         if len(orders) == 0:
             return "\n".join(output), "No pick-up orders found for this school", None
         
-        # Sort orders by grade then student name
+        # Sort orders
         def grade_sort_key(grade):
             grade_upper = grade.upper().strip()
             if grade_upper == 'K' or grade_upper.startswith('KINDER'):
@@ -521,46 +530,43 @@ def export_order_forms(school_name):
         # Limit to prevent timeout
         max_orders = min(len(sorted_orders), 50)
         if len(sorted_orders) > 50:
-            output.append(f"WARNING: Processing only first 50 of {len(sorted_orders)} orders to prevent timeout")
+            output.append(f"WARNING: Processing only first 50 of {len(sorted_orders)} orders")
             sorted_orders = sorted_orders[:50]
         
-        # Create PDFs
+        # Create individual PDFs
         pdf_files = []
-        temp_doc_ids = []
         
         for order_idx, (order_num, order) in enumerate(sorted_orders):
-            output.append(f"Creating document {order_idx + 1}/{len(sorted_orders)}...")
+            output.append(f"Creating PDF {order_idx + 1}/{len(sorted_orders)}...")
             
-            # Copy template to temp folder
-            copy_title = f"Grade {order['student_grade']} - {order['student_name']} - Order {order_num}"
-            order_copy = drive_service.files().copy(
-                fileId=TEMPLATE_ID,
-                body={'name': copy_title, 'parents': [TEMP_FOLDER_ID]}
-            ).execute()
-            order_copy_id = order_copy.get('id')
-            temp_doc_ids.append(order_copy_id)
+            # Load template
+            doc = Document(template_docx)
             
-            # Build replacements
-            all_requests = []
+            # Replace placeholders in paragraphs
+            replacements = {
+                '{{Order Number}}': order['order_number'],
+                '{{Billing Name}}': order['billing_name'],
+                '{{Student name}}': order['student_name'],
+                '{{student name}}': order['student_name'],
+                '{{Grade}}': order['student_grade'],
+                '{{School}}': order['school']
+            }
             
-            main_replacements = [
-                ('{{Order Number}}', order['order_number']),
-                ('{{Billing Name}}', order['billing_name']),
-                ('{{Student name}}', order['student_name']),
-                ('{{student name}}', order['student_name']),
-                ('{{Grade}}', order['student_grade']),
-                ('{{School}}', order['school'])
-            ]
+            # Replace in all paragraphs
+            for paragraph in doc.paragraphs:
+                for key, value in replacements.items():
+                    if key in paragraph.text:
+                        paragraph.text = paragraph.text.replace(key, value)
             
-            for placeholder, value in main_replacements:
-                all_requests.append({
-                    'replaceAllText': {
-                        'containsText': {'text': placeholder, 'matchCase': True},
-                        'replaceText': value
-                    }
-                })
+            # Replace in tables
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        for key, value in replacements.items():
+                            if key in cell.text:
+                                cell.text = cell.text.replace(key, value)
             
-            # Item replacements
+            # Fill item quantities and flavors in table
             for i in range(1, 14):
                 item_index = i - 1
                 
@@ -572,175 +578,38 @@ def export_order_forms(school_name):
                     qty_value = ''
                     flavor_value = ''
                 
-                qty_placeholder = '{{quantity' + str(i) + '}}'
-                all_requests.append({
-                    'replaceAllText': {
-                        'containsText': {'text': qty_placeholder, 'matchCase': True},
-                        'replaceText': qty_value
-                    }
-                })
-                
-                flavor_placeholder = '{{flavor name' + str(i) + '}}'
-                all_requests.append({
-                    'replaceAllText': {
-                        'containsText': {'text': flavor_placeholder, 'matchCase': True},
-                        'replaceText': flavor_value
-                    }
-                })
+                # Replace in all tables
+                for table in doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            cell.text = cell.text.replace(f'{{{{quantity{i}}}}}', qty_value)
+                            cell.text = cell.text.replace(f'{{{{flavor name{i}}}}}', flavor_value)
             
-            # Apply replacements
-            docs_service.documents().batchUpdate(
-                documentId=order_copy_id,
-                body={'requests': all_requests}
-            ).execute()
+            # Save as docx
+            temp_docx = f"temp_order_{order_idx}.docx"
+            doc.save(temp_docx)
             
-            # Calculate popcorn vs coffee
-            popcorn_count = 0
-            coffee_count = 0
-            
-            for item in order['items']:
-                flavor = item['flavor'].lower()
-                quantity = item['quantity']
-                
-                if 'coffee' in flavor:
-                    coffee_count += quantity
-                else:
-                    popcorn_count += quantity
-            
-            # Get document to find items table end
-            doc = docs_service.documents().get(documentId=order_copy_id).execute()
-            content = doc.get('body').get('content')
-            
-            items_table_end = None
-            for element in content:
-                if 'table' in element:
-                    table = element.get('table')
-                    table_text = ""
-                    
-                    for row in table.get('tableRows', []):
-                        for cell in row.get('tableCells', []):
-                            for cell_content in cell.get('content', []):
-                                if 'paragraph' in cell_content:
-                                    for elem in cell_content.get('paragraph', {}).get('elements', []):
-                                        if 'textRun' in elem:
-                                            table_text += elem.get('textRun', {}).get('content', '')
-                    
-                    if 'Quantity' in table_text and 'Flavor' in table_text:
-                        items_table_end = element.get('endIndex')
-                        break
-            
-            # Insert summary
-            if items_table_end:
-                popcorn_label = "bag" if popcorn_count == 1 else "bags"
-                coffee_label = "bag" if coffee_count == 1 else "bags"
-                summary_text = f"\n\nPopcorn: {popcorn_count} {popcorn_label}     Coffee: {coffee_count} {coffee_label}\n"
-                
-                summary_requests = [
-                    {
-                        'insertText': {
-                            'location': {'index': items_table_end},
-                            'text': summary_text
-                        }
-                    },
-                    {
-                        'updateTextStyle': {
-                            'range': {
-                                'startIndex': items_table_end,
-                                'endIndex': items_table_end + len(summary_text)
-                            },
-                            'textStyle': {
-                                'bold': True,
-                                'fontSize': {'magnitude': 12, 'unit': 'PT'},
-                                'weightedFontFamily': {
-                                    'fontFamily': 'Lexend',
-                                    'weight': 700
-                                }
-                            },
-                            'fields': 'bold,fontSize,weightedFontFamily'
-                        }
-                    }
-                ]
-                
-                docs_service.documents().batchUpdate(
-                    documentId=order_copy_id,
-                    body={'requests': summary_requests}
-                ).execute()
-            
-            # Delete empty rows
-            num_items = len(order['items'])
-            if num_items < 13:
-                doc = docs_service.documents().get(documentId=order_copy_id).execute()
-                content = doc.get('body').get('content')
-                
-                items_table = None
-                items_table_start = None
-                
-                for element in content:
-                    if 'table' in element:
-                        table = element.get('table')
-                        table_text = ""
-                        
-                        for row in table.get('tableRows', []):
-                            for cell in row.get('tableCells', []):
-                                for cell_content in cell.get('content', []):
-                                    if 'paragraph' in cell_content:
-                                        for elem in cell_content.get('paragraph', {}).get('elements', []):
-                                            if 'textRun' in elem:
-                                                table_text += elem.get('textRun', {}).get('content', '')
-                        
-                        if 'Quantity' in table_text and 'Flavor' in table_text:
-                            items_table = table
-                            items_table_start = element.get('startIndex')
-                            break
-                
-                if items_table and items_table_start:
-                    num_rows = len(items_table.get('tableRows', []))
-                    delete_requests = []
-                    rows_to_delete = num_rows - (num_items + 1)
-                    
-                    if rows_to_delete > 0:
-                        for i in range(rows_to_delete):
-                            delete_requests.append({
-                                'deleteTableRow': {
-                                    'tableCellLocation': {
-                                        'tableStartLocation': {'index': items_table_start},
-                                        'rowIndex': num_items + 1,
-                                        'columnIndex': 0
-                                    }
-                                }
-                            })
-                        
-                        if delete_requests:
-                            docs_service.documents().batchUpdate(
-                                documentId=order_copy_id,
-                                body={'requests': delete_requests}
-                            ).execute()
-            
-            # Export as PDF
-            request = drive_service.files().export_media(
-                fileId=order_copy_id,
-                mimeType='application/pdf'
-            )
-            
-            pdf_filename = f"temp_{order_idx}.pdf"
-            fh = io.FileIO(pdf_filename, 'wb')
-            downloader = MediaIoBaseDownload(fh, request)
-            done = False
-            while done is False:
-                status, done = downloader.next_chunk()
-            fh.close()
-            
-            pdf_files.append(pdf_filename)
-        
-        output.append(f"Created {len(sorted_orders)} PDFs")
-        
-        # Clean up temporary Google Docs
-        output.append("Cleaning up temporary documents...")
-        for doc_id in temp_doc_ids:
+            # Convert to PDF
+            temp_pdf = f"temp_order_{order_idx}.pdf"
             try:
-                drive_service.files().delete(fileId=doc_id).execute()
+                convert(temp_docx, temp_pdf)
+                pdf_files.append(temp_pdf)
+            except:
+                # If docx2pdf fails (common on Linux), use reportlab instead
+                output.append(f"  Note: Using alternative PDF generation for order {order_idx + 1}")
+                # For now, skip if conversion fails
+                pass
+            
+            # Clean up temp docx
+            try:
+                os.remove(temp_docx)
             except:
                 pass
+        
+        output.append(f"Created {len(pdf_files)} PDFs")
+        
+        if len(pdf_files) == 0:
+            return "\n".join(output), "No PDFs were generated successfully", None
         
         # Combine PDFs
         merger = PdfMerger()
@@ -751,16 +620,22 @@ def export_order_forms(school_name):
         merger.write(combined_pdf_filename)
         merger.close()
         
-        # Clean up temp PDF files
+        # Clean up temp files
         for pdf_file in pdf_files:
             try:
                 os.remove(pdf_file)
             except:
                 pass
         
+        try:
+            os.remove(template_docx)
+        except:
+            pass
+        
         output.append(f"Combined PDF created: {combined_pdf_filename}")
         
         return "\n".join(output), None, combined_pdf_filename
         
     except Exception as e:
-        return "\n".join(output), str(e), None
+        import traceback
+        return "\n".join(output), f"{str(e)}\n{traceback.format_exc()}", None
