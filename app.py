@@ -59,7 +59,7 @@ st.header("🏫 Order Processing")
 st.subheader("📄 Generate Order Forms")
         
         # Get list of schools from spreadsheet
-        try:
+try:
             import gspread
             creds = scripts.get_credentials()
             gc = gspread.authorize(creds)
@@ -177,6 +177,7 @@ st.subheader("📄 Generate Order Forms")
         st.markdown("---")
 
         st.markdown("**Need help?** Contact the administrator")
+
 
 
 
