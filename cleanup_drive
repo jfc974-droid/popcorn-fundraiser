@@ -1,0 +1,46 @@
+import scripts
+from googleapiclient.discovery import build
+
+def cleanup_service_account_drive():
+    """Delete all files in the service account's Drive"""
+    try:
+        creds = scripts.get_credentials()
+        drive_service = build('drive', 'v3', credentials=creds)
+        
+        print("Fetching all files in service account Drive...")
+        
+        # Get all files
+        results = drive_service.files().list(
+            pageSize=1000,
+            fields="files(id, name, mimeType, createdTime)"
+        ).execute()
+        
+        files = results.get('files', [])
+        
+        print(f"\nFound {len(files)} files")
+        
+        if not files:
+            print("No files to delete!")
+            return
+        
+        print("\nFiles found:")
+        for file in files:
+            print(f"  - {file['name']} ({file['mimeType']})")
+        
+        # Delete all files
+        print(f"\nDeleting {len(files)} files...")
+        
+        for idx, file in enumerate(files, 1):
+            try:
+                drive_service.files().delete(fileId=file['id']).execute()
+                print(f"  [{idx}/{len(files)}] Deleted: {file['name']}")
+            except Exception as e:
+                print(f"  [{idx}/{len(files)}] Error deleting {file['name']}: {str(e)}")
+        
+        print(f"\n✓ Cleanup complete! Deleted {len(files)} files")
+        
+    except Exception as e:
+        print(f"Error: {str(e)}")
+
+if __name__ == "__main__":
+    cleanup_service_account_drive()
