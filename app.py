@@ -56,7 +56,7 @@ if check_password():
 st.header("🏫 Order Processing")
         
         # Generate Order Forms with school selector
-        st.subheader("📄 Generate Order Forms")
+st.subheader("📄 Generate Order Forms")
         
         # Get list of schools from spreadsheet
         try:
@@ -177,5 +177,6 @@ st.header("🏫 Order Processing")
         st.markdown("---")
 
         st.markdown("**Need help?** Contact the administrator")
+
 
 
